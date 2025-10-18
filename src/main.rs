@@ -5,14 +5,32 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::StatusCode;
 use tokio;
 use httpdate;
+use clap::Parser;
 
 const FILE_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.txt";
 const SHA256_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.sha256";
 const LOCAL_FILE_PATH: &str = "haproxy_geo_ip.txt";
 const LOCAL_FILE_CIDR: &str = "geoip.txt";
 
+#[derive(Parser, Debug)]
+#[command(name = "ha-geo-ip")]
+#[command(about = "Filter IP geolocation data by country codes", long_about = None)]
+struct Args {
+    /// Country codes to filter (e.g., DK SE NO)
+    #[arg(short = 'c', long = "country", required = true)]
+    country_codes: Vec<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    
+    // Convert all country codes to uppercase for case-insensitive matching
+    let country_codes: Vec<String> = args.country_codes
+        .iter()
+        .map(|cc| cc.to_uppercase())
+        .collect();
+    
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
 
@@ -68,18 +86,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Process the content (either from download or local file)
-    process_and_grep(&content)?;
+    process_and_grep(&content, &country_codes)?;
 
     Ok(())
 }
 
-fn process_and_grep(content: &[u8]) -> io::Result<()> {
+fn process_and_grep(content: &[u8], country_codes: &[String]) -> io::Result<()> {
     let reader = BufReader::new(content);
     
-    println!("\nProcessing CIDR blocks for Denmark (DK) and Sweden (SE)...");
+    println!("\nProcessing CIDR blocks for country codes: {:?}...", country_codes);
     
-    let mut dk_count = 0;
-    let mut se_count = 0;
+    let mut country_counts = std::collections::HashMap::new();
     let mut filtered_lines = Vec::new();
 
     for line in reader.lines() {
@@ -90,12 +107,9 @@ fn process_and_grep(content: &[u8]) -> io::Result<()> {
             let cidr_block = columns[0];
             let country_code = columns[1];
             
-            if country_code == "DK" {
+            if country_codes.iter().any(|cc| cc == country_code) {
                 filtered_lines.push(format!("{} {}", cidr_block, country_code));
-                dk_count += 1;
-            } else if country_code == "SE" {
-                filtered_lines.push(format!("{} {}", cidr_block, country_code));
-                se_count += 1;
+                *country_counts.entry(country_code.to_string()).or_insert(0) += 1;
             }
         }
     }
@@ -106,10 +120,15 @@ fn process_and_grep(content: &[u8]) -> io::Result<()> {
     
     println!("Filtered CIDR blocks written to: {}", LOCAL_FILE_CIDR);
     println!("\nSummary:");
-    println!("Denmark (DK) CIDR blocks: {}", dk_count);
-    println!("Sweden (SE) CIDR blocks: {}", se_count);
-    println!("Total matching blocks: {}", dk_count + se_count);
+    
+    let mut total = 0;
+    for code in country_codes {
+        let count = country_counts.get(code).unwrap_or(&0);
+        println!("{} CIDR blocks: {}", code, count);
+        total += count;
+    }
+    
+    println!("Total matching blocks: {}", total);
 
     Ok(())
 }
-
