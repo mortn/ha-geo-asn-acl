@@ -10,15 +10,20 @@ use clap::Parser;
 const FILE_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.txt";
 const SHA256_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.sha256";
 const LOCAL_FILE_PATH: &str = "haproxy_geo_ip.txt";
-const LOCAL_FILE_CIDR: &str = "geoip.txt";
+const LOCAL_FILE_CIDR: &str = "okcidr.txt";
+const ASN_BASE_URL: &str = "https://raw.githubusercontent.com/ipverse/asn-ip/master/as";
 
 #[derive(Parser, Debug)]
 #[command(name = "ha-geo-ip")]
 #[command(about = "Filter IP geolocation data by country codes", long_about = None)]
 struct Args {
-    /// Country codes to filter (e.g., DK SE NO)
+    /// Country codes to filter (can be specified multiple times)
     #[arg(short = 'c', long = "country", required = true)]
     country_codes: Vec<String>,
+    
+    /// ASN numbers to include (can be specified multiple times)
+    #[arg(short = 'a', long = "asn")]
+    asn_numbers: Vec<String>,
 }
 
 #[tokio::main]
@@ -88,6 +93,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process the content (either from download or local file)
     process_and_grep(&content, &country_codes)?;
 
+    // Process ASN data if any ASN numbers are provided
+    if !args.asn_numbers.is_empty() {
+        process_asn_data(&client, &args.asn_numbers).await?;
+    }
+
     Ok(())
 }
 
@@ -130,5 +140,68 @@ fn process_and_grep(content: &[u8], country_codes: &[String]) -> io::Result<()> 
     
     println!("Total matching blocks: {}", total);
 
+    Ok(())
+}
+
+async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\nProcessing ASN data for: {:?}...", asn_numbers);
+    
+    let mut all_asn_blocks = Vec::new();
+    let mut asn_counts = std::collections::HashMap::new();
+    
+    for asn in asn_numbers {
+        let url = format!("{}/{}/ipv4-aggregated.txt", ASN_BASE_URL, asn);
+        println!("Fetching ASN data from: {}", url);
+        
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    let content = response.text().await?;
+                    let lines: Vec<&str> = content.lines().collect();
+                    let count = lines.len();
+                    
+                    for line in lines {
+                        let line = line.trim();
+                        if !line.is_empty() {
+                            all_asn_blocks.push(format!("{} AS{}", line, asn));
+                        }
+                    }
+                    
+                    asn_counts.insert(asn.clone(), count);
+                    println!("AS{} CIDR blocks fetched: {}", asn, count);
+                } else {
+                    eprintln!("Warning: Failed to fetch AS{}: HTTP {}", asn, response.status());
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Error fetching AS{}: {}", asn, e);
+            }
+        }
+    }
+    
+    // Append ASN blocks to the existing geoip.txt file
+    if !all_asn_blocks.is_empty() {
+        let mut existing_content = fs::read_to_string(LOCAL_FILE_CIDR)
+            .unwrap_or_else(|_| String::new());
+        
+        if !existing_content.is_empty() && !existing_content.ends_with('\n') {
+            existing_content.push('\n');
+        }
+        
+        existing_content.push_str(&all_asn_blocks.join("\n"));
+        fs::write(LOCAL_FILE_CIDR, existing_content)?;
+        
+        println!("\nASN CIDR blocks appended to: {}", LOCAL_FILE_CIDR);
+        println!("\nASN Summary:");
+        
+        let mut total = 0;
+        for asn in asn_numbers {
+            let count = asn_counts.get(asn).unwrap_or(&0);
+            println!("AS{} CIDR blocks: {}", asn, count);
+            total += count;
+        }
+        println!("Total ASN blocks: {}", total);
+    }
+    
     Ok(())
 }
