@@ -1,67 +1,86 @@
-# IP Geolocation CIDR Block Fetcher
+# HAProxy Geo & ASN ACL Generator
 
-A Rust command-line application that fetches IP geolocation data, verifies its integrity using SHA256 checksums, and filters CIDR blocks for specific countries (Denmark and Sweden).
+## What is this?
+This is a rust command-line application that fetches IP geolocation data and ASN CIDR blocks and generates HAProxy-compatible ACL files filtered by country codes and/or ASN numbers.
 
 ## Features
 
-- **Efficient Caching**: Only downloads the file if it's newer than the local cached version using HTTP `If-Modified-Since` headers
-- **Integrity Verification**: Validates downloaded files using SHA256 checksums
-- **Country Filtering**: Extracts and displays CIDR blocks specifically for Denmark (DK) and Sweden (SE)
-- **Formatted Output**: Clean, tabular display of results with summary statistics
+- **Flexible Filtering**: Filter CIDR blocks by country code(s) and/or ASN number(s)
+- **Efficient Caching**: Only downloads the geolocation file if it's newer than the local cached version using HTTP `If-Modified-Since` headers
+- **Integrity Verification**: Validates downloaded geolocation files using SHA256 checksums
+- **ASN Support**: Fetch and include CIDR blocks for specific Autonomous System Numbers (ASNs)
+- **HAProxy Ready**: Generates output file (`okcidr.txt`) with CIDR blocks only, compatible with HAProxy's ACL `-f` flag
+- **Case-Insensitive**: Country codes work in any case (dk, DK, Dk all work the same)
 - **Error Handling**: Robust error handling for network issues and file corruption
 
 ## How It Works
 
 1. **Local File Check**: Checks if a local copy of `haproxy_geo_ip.txt` exists and gets its modification time
 2. **Conditional Download**: Sends an HTTP request with `If-Modified-Since` header to only download if the remote file is newer
-3. **Integrity Verification**: Downloads and verifies the SHA256 checksum for any newly fetched files
-4. **Data Processing**: Parses the file to extract CIDR blocks with country codes "DK" or "SE"
-5. **Results Display**: Shows formatted results with summary statistics
+3. **Integrity Verification**: Downloads and verifies the SHA256 checksum for any newly fetched geolocation files
+4. **Country Filtering**: Parses the file to extract CIDR blocks matching the specified country codes
+5. **ASN Fetching**: Downloads CIDR blocks for specified ASN numbers from the ipverse/asn-ip repository
+6. **Output Generation**: Writes all CIDR blocks (country + ASN) to `okcidr.txt` in HAProxy-compatible format
 
 ## Prerequisites
 
 - Rust 1.70+ (2021 edition)
-- Internet connection for initial download
+- Internet connection for downloading geolocation and ASN data
 
 ## Installation
 
-1. Clone or create a new Rust project:
+1. Clone the repository:
 ```bash
-cargo new ip-geolocation-fetcher
-cd ip-geolocation-fetcher
+git clone https://github.com/mortn/ha-geo-asn-acl.git
+cd ha-geo-asn-acl
 ```
 
-2. Replace the contents of `Cargo.toml` with:
-```toml
-[package]
-name = "ip-geolocation-fetcher"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-reqwest = { version = "0.11", features = ["blocking"] }
-sha2 = "0.10"
-tokio = { version = "1", features = ["full"] }
-httpdate = "1.0"
-```
-
-3. Replace `src/main.rs` with the provided source code
-
-4. Build the application:
+2. Build the application:
 ```bash
 cargo build --release
 ```
 
 ## Usage
 
-Simply run the application:
+The application requires at least one country code and supports optional ASN numbers.
+
+### Basic Usage - Country Codes Only
+
+Filter CIDR blocks for one or more countries:
+
 ```bash
-cargo run
+# Single country
+cargo run -- -c dk
+
+# Multiple countries
+cargo run -- -c dk -c se -c no
+
+# Using long form
+cargo run -- --country dk --country se
+
+# Case insensitive
+cargo run -- -c DK -c Se -c NO
 ```
 
-Or run the compiled binary:
+### Advanced Usage - Country Codes + ASN Numbers
+
+Include CIDR blocks from specific Autonomous System Numbers:
+
 ```bash
-./target/release/ip-geolocation-fetcher
+# Countries with one ASN
+cargo run -- -c dk -c se -a 1234
+
+# Countries with multiple ASNs
+cargo run -- -c dk -c se -a 1234 -a 5678 -a 9012
+
+# Using long form
+cargo run -- --country dk --asn 1234 --asn 5678
+```
+
+### Running the Compiled Binary
+
+```bash
+./target/release/ha-geo-ip -c dk -c se -a 1234
 ```
 
 ## Sample Output
@@ -73,27 +92,66 @@ Verifying integrity with SHA256 from: https://wetmore.ca/ip/haproxy_geo_ip.sha25
 SHA256 verification successful!
 Local file updated.
 
-CIDR blocks for Denmark (DK) and Sweden (SE):
-CIDR Block           Country Code
------------------------------------
-5.44.64.0/19         DK
-5.45.96.0/19         DK
-5.103.128.0/19       SE
-5.135.0.0/16         SE
-...
+Processing CIDR blocks for country codes: ["DK", "SE"]...
+Filtered CIDR blocks written to: okcidr.txt
 
 Summary:
-Denmark (DK) CIDR blocks: 245
-Sweden (SE) CIDR blocks: 312
+DK CIDR blocks: 245
+SE CIDR blocks: 312
 Total matching blocks: 557
+
+Processing ASN data for: ["1234"]...
+Fetching ASN data from: https://raw.githubusercontent.com/ipverse/asn-ip/master/as/1234/ipv4-aggregated.txt
+AS1234 CIDR blocks fetched: 128
+
+ASN CIDR blocks appended to: okcidr.txt
+
+ASN Summary:
+AS1234 CIDR blocks: 128
+Total ASN blocks: 128
 ```
 
-## Data Source
+## Output File Format
 
-- **Primary Data**: https://wetmore.ca/ip/haproxy_geo_ip.txt
+The generated `okcidr.txt` file contains one CIDR block per line, ready for use with HAProxy:
+
+```
+5.44.64.0/19
+5.45.96.0/19
+5.103.128.0/19
+192.0.2.0/24
+203.0.113.0/24
+```
+
+## HAProxy Integration
+
+Use the generated `okcidr.txt` file in your HAProxy configuration:
+
+```haproxy
+frontend http-in
+    bind *:80
+    
+    # Define ACL using the generated CIDR list
+    acl acl_cidr_ok src -f /etc/haproxy/okcidr.txt
+    
+    # Allow only IPs in the list
+    http-request deny unless acl_cidr_ok
+    
+    default_backend servers
+
+backend servers
+    server server1 192.168.1.10:8080
+```
+
+**Important**: Use `src -f /etc/haproxy/okcidr.txt` NOT `src,map_ip()`. The `-f` flag is the correct way to match source IPs against a CIDR list file in HAProxy.
+
+## Data Sources
+
+- **Geolocation Data**: https://wetmore.ca/ip/haproxy_geo_ip.txt
 - **SHA256 Checksum**: https://wetmore.ca/ip/haproxy_geo_ip.sha256
+- **ASN Data**: https://github.com/ipverse/asn-ip (IPv4 aggregated CIDR blocks)
 
-The data file contains two columns:
+The geolocation data file contains two columns:
 1. **CIDR Block**: IP address range in CIDR notation
 2. **Country Code**: Two-letter ISO country code
 
@@ -101,12 +159,24 @@ The data file contains two columns:
 
 ```
 .
-â”œâ”€â”€ Cargo.toml
-â”œâ”€â”€ src/
-â”‚   â””â”€â”€ main.rs
-â”œâ”€â”€ haproxy_geo_ip.txt  # Cached data file (created after first run)
-â””â”€â”€ README.md
+├── Cargo.toml
+├── src/
+│   └── main.rs
+├── haproxy_geo_ip.txt    # Cached geolocation data (created after first run)
+├── okcidr.txt            # Generated HAProxy ACL file
+└── README.md
 ```
+
+## Command-Line Arguments
+
+- `-c, --country <CODE>`: Country code to filter (required, can be specified multiple times)
+  - Example: `-c dk -c se -c no`
+  - Case-insensitive
+
+- `-a, --asn <NUMBER>`: ASN number to include (optional, can be specified multiple times)
+  - Example: `-a 1234 -a 5678`
+
+- `-h, --help`: Display help information
 
 ## Dependencies
 
@@ -114,21 +184,32 @@ The data file contains two columns:
 - **sha2**: SHA-256 hashing for integrity verification
 - **tokio**: Async runtime for efficient I/O operations
 - **httpdate**: HTTP date parsing for conditional requests
+- **clap**: Command-line argument parsing
 
 ## Error Handling
 
 The application handles several error conditions:
 
 - **Network failures**: Connection timeouts, DNS resolution issues
-- **HTTP errors**: 404, 500, and other HTTP status codes
+- **HTTP errors**: 404, 500, and other HTTP status codes (with warnings for ASN fetches)
 - **Checksum mismatches**: Corrupted downloads are detected and rejected
 - **File I/O errors**: Permission issues, disk space problems
+- **Missing ASN data**: Continues processing other ASNs if one fails
 
 ## Performance
 
-- **Bandwidth Efficient**: Only downloads when files are updated
+- **Bandwidth Efficient**: Only downloads geolocation data when files are updated
 - **Fast Processing**: Async I/O for network operations
 - **Memory Efficient**: Streams file processing without loading entire file into memory
+- **Parallel ASN Fetching**: Fetches multiple ASN files efficiently
+
+## Use Cases
+
+- **Geo-blocking**: Restrict access to specific countries
+- **Geo-allowing**: Only allow access from specific countries
+- **ASN filtering**: Block or allow traffic from specific network providers
+- **Mixed filtering**: Combine country and ASN filters for fine-grained control
+- **HAProxy ACLs**: Generate ready-to-use ACL files for HAProxy
 
 ## Contributing
 
@@ -142,11 +223,21 @@ The application handles several error conditions:
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+## ToDo
+- Add systemd files to demonstrate how to let this app run as non-root, and still allow us to smoothly copy an updated okcidr.txt file to /etc/haproxy/okcidr.txt and then reload the haproxy
+
 ## Changelog
+
+### v0.2.0
+- Added command-line argument support with clap
+- Added ASN filtering support
+- Case-insensitive country code matching
+- HAProxy-compatible output (CIDR blocks only, no labels)
+- Support for multiple countries and ASNs
+- Changed output file to `okcidr.txt`
 
 ### v0.1.0
 - Initial release
 - Basic file fetching and SHA256 verification
 - Country code filtering for DK and SE
 - Conditional downloading with caching
-
