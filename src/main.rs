@@ -118,13 +118,14 @@ fn process_and_grep(content: &[u8], country_codes: &[String]) -> io::Result<()> 
             let country_code = columns[1];
             
             if country_codes.iter().any(|cc| cc == country_code) {
-                filtered_lines.push(format!("{} {}", cidr_block, country_code));
+                // Only store the CIDR block, not the country code
+                filtered_lines.push(cidr_block.to_string());
                 *country_counts.entry(country_code.to_string()).or_insert(0) += 1;
             }
         }
     }
     
-    // Write filtered results to LOCAL_FILE_CIDR
+    // Write filtered results to LOCAL_FILE_CIDR (CIDR blocks only)
     let output_content = filtered_lines.join("\n");
     fs::write(LOCAL_FILE_CIDR, &output_content)?;
     
@@ -163,7 +164,8 @@ async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> R
                     for line in lines {
                         let line = line.trim();
                         if !line.is_empty() {
-                            all_asn_blocks.push(format!("{} AS{}", line, asn));
+                            // Only store the CIDR block, not the ASN suffix
+                            all_asn_blocks.push(line.to_string());
                         }
                     }
                     
@@ -179,7 +181,7 @@ async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> R
         }
     }
     
-    // Append ASN blocks to the existing geoip.txt file
+    // Append ASN blocks to the existing okcidr.txt file
     if !all_asn_blocks.is_empty() {
         let mut existing_content = fs::read_to_string(LOCAL_FILE_CIDR)
             .unwrap_or_else(|_| String::new());
