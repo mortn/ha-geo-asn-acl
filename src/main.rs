@@ -3,8 +3,6 @@ use std::io::{self, BufRead, BufReader};
 use sha2::{Sha256, Digest};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::StatusCode;
-use tokio;
-use httpdate;
 use clap::Parser;
 
 const FILE_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.txt";
@@ -61,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Verifying integrity with SHA256 from: {}", SHA256_URL);
             let sha256_response = client.get(SHA256_URL).send().await?;
             let sha256_content = sha256_response.text().await?;
-            let expected_hash = sha256_content.trim().split_whitespace().next().unwrap_or("");
+            let expected_hash = sha256_content.split_whitespace().next().unwrap_or("");
 
             let mut hasher = Sha256::new();
             hasher.update(&content);
