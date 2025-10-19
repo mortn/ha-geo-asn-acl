@@ -1,9 +1,9 @@
-use std::fs;
-use std::io::{self, BufRead, BufReader};
-use sha2::{Sha256, Digest};
+use clap::Parser;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::StatusCode;
-use clap::Parser;
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::io::{self, BufRead, BufReader};
 
 const FILE_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.txt";
 const SHA256_URL: &str = "https://wetmore.ca/ip/haproxy_geo_ip.sha256";
@@ -18,7 +18,7 @@ struct Args {
     /// Country codes to filter (can be specified multiple times)
     #[arg(short = 'c', long = "country", required = true)]
     country_codes: Vec<String>,
-    
+
     /// ASN numbers to include (can be specified multiple times)
     #[arg(short = 'a', long = "asn")]
     asn_numbers: Vec<String>,
@@ -27,13 +27,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    
+
     // Convert all country codes to uppercase for case-insensitive matching
-    let country_codes: Vec<String> = args.country_codes
+    let country_codes: Vec<String> = args
+        .country_codes
         .iter()
         .map(|cc| cc.to_uppercase())
         .collect();
-    
+
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
 
@@ -54,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         StatusCode::OK => {
             println!("New version of the file found, downloading...");
             let content = response.bytes().await?;
-            
+
             // Verify SHA256 of the newly downloaded file
             println!("Verifying integrity with SHA256 from: {}", SHA256_URL);
             let sha256_response = client.get(SHA256_URL).send().await?;
@@ -77,11 +78,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fs::write(LOCAL_FILE_PATH, &content)?;
             println!("Local file updated.");
             content.to_vec()
-        },
+        }
         StatusCode::NOT_MODIFIED => {
             println!("Local file is already up-to-date. Processing local file.");
             fs::read(LOCAL_FILE_PATH)?
-        },
+        }
         _ => {
             eprintln!("Failed to fetch file: {}", response.status());
             std::process::exit(1);
@@ -101,20 +102,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn process_and_grep(content: &[u8], country_codes: &[String]) -> io::Result<()> {
     let reader = BufReader::new(content);
-    
-    println!("\nProcessing CIDR blocks for country codes: {:?}...", country_codes);
-    
+
+    println!(
+        "\nProcessing CIDR blocks for country codes: {:?}...",
+        country_codes
+    );
+
     let mut country_counts = std::collections::HashMap::new();
     let mut filtered_lines = Vec::new();
 
     for line in reader.lines() {
         let line = line?;
         let columns: Vec<&str> = line.split_whitespace().collect();
-        
+
         if columns.len() == 2 {
             let cidr_block = columns[0];
             let country_code = columns[1];
-            
+
             if country_codes.iter().any(|cc| cc == country_code) {
                 // Only store the CIDR block, not the country code
                 filtered_lines.push(cidr_block.to_string());
@@ -122,43 +126,46 @@ fn process_and_grep(content: &[u8], country_codes: &[String]) -> io::Result<()> 
             }
         }
     }
-    
+
     // Write filtered results to LOCAL_FILE_CIDR (CIDR blocks only)
     let output_content = filtered_lines.join("\n");
     fs::write(LOCAL_FILE_CIDR, &output_content)?;
-    
+
     println!("Filtered CIDR blocks written to: {}", LOCAL_FILE_CIDR);
     println!("\nSummary:");
-    
+
     let mut total = 0;
     for code in country_codes {
         let count = country_counts.get(code).unwrap_or(&0);
         println!("{} CIDR blocks: {}", code, count);
         total += count;
     }
-    
+
     println!("Total matching blocks: {}", total);
 
     Ok(())
 }
 
-async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+async fn process_asn_data(
+    client: &reqwest::Client,
+    asn_numbers: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("\nProcessing ASN data for: {:?}...", asn_numbers);
-    
+
     let mut all_asn_blocks = Vec::new();
     let mut asn_counts = std::collections::HashMap::new();
-    
+
     for asn in asn_numbers {
         let url = format!("{}/{}/ipv4-aggregated.txt", ASN_BASE_URL, asn);
         println!("Fetching ASN data from: {}", url);
-        
+
         match client.get(&url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
                     let content = response.text().await?;
                     let lines: Vec<&str> = content.lines().collect();
                     let count = lines.len();
-                    
+
                     for line in lines {
                         let line = line.trim();
                         if !line.is_empty() {
@@ -166,11 +173,15 @@ async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> R
                             all_asn_blocks.push(line.to_string());
                         }
                     }
-                    
+
                     asn_counts.insert(asn.clone(), count);
                     println!("AS{} CIDR blocks fetched: {}", asn, count);
                 } else {
-                    eprintln!("Warning: Failed to fetch AS{}: HTTP {}", asn, response.status());
+                    eprintln!(
+                        "Warning: Failed to fetch AS{}: HTTP {}",
+                        asn,
+                        response.status()
+                    );
                 }
             }
             Err(e) => {
@@ -178,22 +189,22 @@ async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> R
             }
         }
     }
-    
+
     // Append ASN blocks to the existing okcidr.txt file
     if !all_asn_blocks.is_empty() {
-        let mut existing_content = fs::read_to_string(LOCAL_FILE_CIDR)
-            .unwrap_or_else(|_| String::new());
-        
+        let mut existing_content =
+            fs::read_to_string(LOCAL_FILE_CIDR).unwrap_or_else(|_| String::new());
+
         if !existing_content.is_empty() && !existing_content.ends_with('\n') {
             existing_content.push('\n');
         }
-        
+
         existing_content.push_str(&all_asn_blocks.join("\n"));
         fs::write(LOCAL_FILE_CIDR, existing_content)?;
-        
+
         println!("\nASN CIDR blocks appended to: {}", LOCAL_FILE_CIDR);
         println!("\nASN Summary:");
-        
+
         let mut total = 0;
         for asn in asn_numbers {
             let count = asn_counts.get(asn).unwrap_or(&0);
@@ -202,6 +213,6 @@ async fn process_asn_data(client: &reqwest::Client, asn_numbers: &[String]) -> R
         }
         println!("Total ASN blocks: {}", total);
     }
-    
+
     Ok(())
 }
