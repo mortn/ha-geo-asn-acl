@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-release:
     name: Build Release
@@ -16,7 +19,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: ha-geo-ip
             asset_name: ha-geo-ip-linux-amd64
-    
+   
     steps:
       - uses: actions/checkout@v4
       
